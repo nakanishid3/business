@@ -442,7 +442,7 @@ function setupReportSheet(ss) {
 // ===== トリガー設定 =====
 
 /**
- * 毎日20時に checkAndUpdateInventory を実行するトリガーを設定
+ * 毎日20時半に checkAndUpdateInventory を実行するトリガーを設定
  */
 function createDailyTrigger() {
   // 既存の同名トリガーを削除
@@ -454,10 +454,11 @@ function createDailyTrigger() {
     .timeBased()
     .everyDays(1)
     .atHour(20)
+    .nearMinute(30)
     .inTimezone(CONFIG.TIMEZONE)
     .create();
 
-  SpreadsheetApp.getUi().alert('トリガー設定完了：毎日20時に自動実行されます');
+  SpreadsheetApp.getUi().alert('トリガー設定完了：毎日20時半に自動実行されます');
 }
 
 // ===== メニュー追加 =====
