@@ -14,11 +14,6 @@ const CONFIG = {
   SHEET_INVENTORY: '商品在庫',
   SHEET_HISTORY:   '取引履歴',
   SHEET_REPORT:    '売上レポート',
-  // 手動登録エリア列（F列=6, G列=7, H列=8）
-  MANUAL_COL_ITEM:     6,  // 品名
-  MANUAL_COL_QTY:      7,  // 増減数
-  MANUAL_COL_REMARKS:  8,  // 備考
-  MANUAL_INPUT_ROW:    4,  // 入力行（4行目）
 };
 
 // ===== メイン処理（トリガーから呼び出し） =====
@@ -198,51 +193,67 @@ function updateMasterInventory(sheet, itemName, quantityChange) {
   sheet.getRange(newRow, 1, 1, 3).setValues([[itemName, quantityChange, new Date()]]);
 }
 
-// ===== 手動登録 =====
+// ===== 前日データ取り込み（手動） =====
 
 /**
- * 「登録」ボタンから呼び出し：商品在庫シートの入力エリアを読み取り在庫更新
+ * 前日20時以降の最終メールを基に在庫を更新する（手動実行）
  */
-function manualRegister() {
-  const ss    = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(CONFIG.SHEET_INVENTORY);
-  const ui    = SpreadsheetApp.getUi();
+function checkAndUpdateInventoryYesterday() {
+  const ui = SpreadsheetApp.getUi();
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
 
-  const inputRow   = CONFIG.MANUAL_INPUT_ROW;
-  const itemName   = sheet.getRange(inputRow, CONFIG.MANUAL_COL_ITEM).getValue();
-  const qtyChange  = sheet.getRange(inputRow, CONFIG.MANUAL_COL_QTY).getValue();
-  const remarks    = sheet.getRange(inputRow, CONFIG.MANUAL_COL_REMARKS).getValue();
+  const yesterdayStr = Utilities.formatDate(yesterday, CONFIG.TIMEZONE, 'yyyy/MM/dd');
+  const todayStr     = Utilities.formatDate(today,     CONFIG.TIMEZONE, 'yyyy/MM/dd');
 
-  if (!itemName || qtyChange === '') {
-    ui.alert('品名と増減数を入力してください');
+  // 前日のメールを検索
+  const query = `from:(${CONFIG.SENDER_EMAIL}) subject:(${CONFIG.EMAIL_SUBJECT}) after:${yesterdayStr} before:${todayStr}`;
+  const threads = GmailApp.search(query);
+
+  if (threads.length === 0) {
+    ui.alert('該当メールなし: ' + yesterdayStr);
     return;
   }
 
-  // 在庫マスタ更新
-  updateMasterInventory(sheet, String(itemName), Number(qtyChange));
+  // 20時以降の最終メールを取得
+  let lastMessage = null;
+  let lastTime    = null;
 
-  // 取引履歴に追記
-  const historySheet  = ss.getSheetByName(CONFIG.SHEET_HISTORY);
-  const now           = new Date();
-  const nowStr        = Utilities.formatDate(now, CONFIG.TIMEZONE, 'yyyy/MM/dd HH:mm');
-  historySheet.appendRow([
-    itemName,
-    Math.abs(Number(qtyChange)),
-    '',
-    nowStr,
-    '手動登録',
-    '',
-    '',
-    remarks,
-  ]);
+  for (const thread of threads) {
+    const messages = thread.getMessages();
+    for (const msg of messages) {
+      const msgDate = msg.getDate();
+      const hour = parseInt(Utilities.formatDate(msgDate, CONFIG.TIMEZONE, 'HH'), 10);
+      if (hour >= 20) {
+        if (!lastTime || msgDate > lastTime) {
+          lastTime    = msgDate;
+          lastMessage = msg;
+        }
+      }
+    }
+  }
 
-  // 入力エリアをクリア
-  sheet.getRange(inputRow, CONFIG.MANUAL_COL_ITEM, 1, 3).clearContent();
+  if (!lastMessage) {
+    ui.alert('前日20時以降のメールなし: ' + yesterdayStr);
+    return;
+  }
 
-  // 売上レポートを更新
+  // メール本文を解析
+  const body   = lastMessage.getPlainBody();
+  const parsed = parseEmailBody(body);
+
+  if (!parsed || parsed.items.length === 0) {
+    ui.alert('メール解析失敗 または 商品情報なし');
+    return;
+  }
+
+  // スプレッドシートを更新
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  updateInventoryAndHistory(ss, parsed, lastTime);
   updateSalesReport(ss);
 
-  ui.alert('登録しました：' + itemName + ' (' + (qtyChange > 0 ? '+' : '') + qtyChange + ')');
+  ui.alert('前日データ取り込み完了: ' + yesterdayStr);
 }
 
 // ===== 売上レポート更新 =====
@@ -357,34 +368,10 @@ function setupInventorySheet(ss) {
     .setFontWeight('bold')
     .setHorizontalAlignment('center');
 
-  // ===== 手動登録エリア（F〜H列）=====
-  sheet.getRange('F1').setValue('【手動登録】')
-    .setBackground('#E2EFDA').setFontWeight('bold');
-
-  sheet.getRange('F2:H2').setValues([['品名', '増減数（＋入荷／－出荷）', '備考']])
-    .setBackground('#A9D18E').setFontWeight('bold').setHorizontalAlignment('center');
-
-  // 入力行の背景色
-  sheet.getRange('F4:H4').setBackground('#F2F2F2');
-
-  // 登録ボタン（セルで代替。あとでスプレッドシート上で図形描画に「manualRegister」を割り当て）
-  sheet.getRange('I3').setValue('▼ 登録ボタン設置場所')
-    .setFontColor('#FF6600').setFontWeight('bold');
-  sheet.getRange('I4').setValue('（図形描画で作成 → manualRegister を割り当て）')
-    .setFontColor('#999999').setFontSize(8);
-
-  // 入力例（5行目）
-  sheet.getRange('F5:H5').setValues([['（例）紅はっさく', 10, '入荷分']]);
-  sheet.getRange('F5:H5').setFontColor('#CCCCCC').setFontStyle('italic');
-
   // 列幅
   sheet.setColumnWidth(1, 160);
   sheet.setColumnWidth(2, 80);
   sheet.setColumnWidth(3, 150);
-  sheet.setColumnWidth(6, 160);
-  sheet.setColumnWidth(7, 180);
-  sheet.setColumnWidth(8, 150);
-  sheet.setColumnWidth(9, 200);
 }
 
 function setupHistorySheet(ss) {
@@ -469,12 +456,12 @@ function createDailyTrigger() {
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('在庫管理')
-    .addItem('初期セットアップ',             'setupSpreadsheet')
+    .addItem('初期セットアップ',               'setupSpreadsheet')
     .addSeparator()
-    .addItem('手動登録',                      'manualRegister')
-    .addItem('売上レポート更新',              'updateSalesReport')
+    .addItem('売上レポート更新',               'updateSalesReport')
     .addSeparator()
-    .addItem('メール確認・在庫更新（手動）', 'checkAndUpdateInventory')
-    .addItem('トリガー設定（毎日20時）',      'createDailyTrigger')
+    .addItem('当日データ取り込み（手動）',     'checkAndUpdateInventory')
+    .addItem('前日データ取り込み（手動）',     'checkAndUpdateInventoryYesterday')
+    .addItem('トリガー設定（毎日20時半）',     'createDailyTrigger')
     .addToUi();
 }
