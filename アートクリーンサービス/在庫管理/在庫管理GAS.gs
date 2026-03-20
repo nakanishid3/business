@@ -68,9 +68,9 @@ function checkAndUpdateInventory() {
 
   Logger.log('解析結果: ' + JSON.stringify(parsed));
 
-  // スプレッドシートを更新
+  // スプレッドシートを更新（当日の手動取り込み分があれば上書き）
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-  updateInventoryAndHistory(ss, parsed, lastTime);
+  updateInventoryAndHistory(ss, parsed, lastTime, true);
   updateSalesReport(ss);
 }
 
@@ -147,11 +147,27 @@ function parseEmailBody(body) {
 
 /**
  * 在庫マスタ減算 & 取引履歴追記
+ * @param {boolean} overwriteToday - true の場合、当日分の既存履歴を在庫を戻した上で上書き
  */
-function updateInventoryAndHistory(ss, data, recordDate) {
+function updateInventoryAndHistory(ss, data, recordDate, overwriteToday) {
   const inventorySheet = ss.getSheetByName(CONFIG.SHEET_INVENTORY);
   const historySheet   = ss.getSheetByName(CONFIG.SHEET_HISTORY);
   const recordDateStr  = Utilities.formatDate(recordDate, CONFIG.TIMEZONE, 'yyyy/MM/dd HH:mm');
+  const todayStr       = Utilities.formatDate(recordDate, CONFIG.TIMEZONE, 'yyyy/MM/dd');
+
+  if (overwriteToday) {
+    // 当日分の既存履歴を取得し、在庫を戻してから行を削除（下から処理して行ずれ防止）
+    const lastRow = historySheet.getLastRow();
+    if (lastRow > 1) {
+      const histData = historySheet.getRange(2, 1, lastRow - 1, 4).getValues();
+      for (let i = histData.length - 1; i >= 0; i--) {
+        if (String(histData[i][3]).startsWith(todayStr)) {
+          updateMasterInventory(inventorySheet, String(histData[i][0]), Number(histData[i][1]));
+          historySheet.deleteRow(i + 2); // +2：ヘッダー行(1) + 0-indexed補正
+        }
+      }
+    }
+  }
 
   for (const item of data.items) {
     // 在庫マスタを減算
@@ -191,6 +207,62 @@ function updateMasterInventory(sheet, itemName, quantityChange) {
   // 新規追加
   const newRow = sheet.getLastRow() + 1;
   sheet.getRange(newRow, 1, 1, 3).setValues([[itemName, quantityChange, new Date()]]);
+}
+
+// ===== 当日データ取り込み（手動） =====
+
+/**
+ * 実行時点の直近メールを基に在庫を更新する（手動実行・時刻制限なし）
+ */
+function checkAndUpdateInventoryManual() {
+  const ui = SpreadsheetApp.getUi();
+  const today = new Date();
+  const todayStr = Utilities.formatDate(today, CONFIG.TIMEZONE, 'yyyy/MM/dd');
+
+  // 当日のメールを検索
+  const query = `from:(${CONFIG.SENDER_EMAIL}) subject:(${CONFIG.EMAIL_SUBJECT}) after:${todayStr}`;
+  const threads = GmailApp.search(query);
+
+  if (threads.length === 0) {
+    ui.alert('本日の該当メールなし: ' + todayStr);
+    return;
+  }
+
+  // 現時点までの直近メールを取得（時刻制限なし）
+  let lastMessage = null;
+  let lastTime    = null;
+
+  for (const thread of threads) {
+    const messages = thread.getMessages();
+    for (const msg of messages) {
+      const msgDate = msg.getDate();
+      if (!lastTime || msgDate > lastTime) {
+        lastTime    = msgDate;
+        lastMessage = msg;
+      }
+    }
+  }
+
+  if (!lastMessage) {
+    ui.alert('本日のメールなし: ' + todayStr);
+    return;
+  }
+
+  // メール本文を解析
+  const body   = lastMessage.getPlainBody();
+  const parsed = parseEmailBody(body);
+
+  if (!parsed || parsed.items.length === 0) {
+    ui.alert('メール解析失敗 または 商品情報なし');
+    return;
+  }
+
+  // スプレッドシートを更新
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  updateInventoryAndHistory(ss, parsed, lastTime);
+  updateSalesReport(ss);
+
+  ui.alert('当日データ取り込み完了: ' + todayStr);
 }
 
 // ===== 前日データ取り込み（手動） =====
@@ -460,7 +532,7 @@ function onOpen() {
     .addSeparator()
     .addItem('売上レポート更新',               'updateSalesReport')
     .addSeparator()
-    .addItem('当日データ取り込み（手動）',     'checkAndUpdateInventory')
+    .addItem('当日データ取り込み（手動）',     'checkAndUpdateInventoryManual')
     .addItem('前日データ取り込み（手動）',     'checkAndUpdateInventoryYesterday')
     .addItem('トリガー設定（毎日20時半）',     'createDailyTrigger')
     .addToUi();
