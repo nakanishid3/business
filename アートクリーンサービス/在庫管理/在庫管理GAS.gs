@@ -6,7 +6,7 @@
 
 // ===== 設定 =====
 const CONFIG = {
-  SPREADSHEET_ID: 'YOUR_SPREADSHEET_ID',  // ← 作成したスプレッドシートのIDに変更
+  SPREADSHEET_ID: '1SUKXrXVQ-WCTzfN-ni-ZXHGaO0QY6S4t8LmEvncx-YY',
   SENDER_EMAIL:   'aeb00403@nifty.com',
   EMAIL_SUBJECT:  '売上速報バリューとれとれ市場',
   TIMEZONE:       'Asia/Tokyo',
@@ -161,7 +161,15 @@ function updateInventoryAndHistory(ss, data, recordDate, overwriteToday) {
     if (lastRow > 1) {
       const histData = historySheet.getRange(2, 1, lastRow - 1, 4).getValues();
       for (let i = histData.length - 1; i >= 0; i--) {
-        if (String(histData[i][3]).startsWith(todayStr)) {
+        // セルが Date オブジェクトの場合と文字列の場合の両方に対応
+        const dateCell = histData[i][3];
+        let dateCellDateStr = '';
+        if (dateCell instanceof Date && !isNaN(dateCell)) {
+          dateCellDateStr = Utilities.formatDate(dateCell, CONFIG.TIMEZONE, 'yyyy/MM/dd');
+        } else if (typeof dateCell === 'string' && dateCell.length >= 10) {
+          dateCellDateStr = dateCell.substring(0, 10);
+        }
+        if (dateCellDateStr === todayStr) {
           updateMasterInventory(inventorySheet, String(histData[i][0]), Number(histData[i][1]));
           historySheet.deleteRow(i + 2); // +2：ヘッダー行(1) + 0-indexed補正
         }
